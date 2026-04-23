@@ -471,13 +471,8 @@ const CONFIG = {
   masjidSubtitle: 'Selangor · Malaysia',
   headerZone:     'ZON SGR03 · SELANGOR',
 
-  // Zon JAKIM (rujuk e-solat.gov.my)
+  // Zon waktu solat — sumber: api.waktusolat.app
   zone: 'SGR03',
-
-  // Fallback Aladhan API (jika e-solat tidak dapat diakses)
-  aladhanCity:    'Shah Alam',
-  aladhanCountry: 'Malaysia',
-  aladhanMethod:  3,
 
   // Minit Iqamah selepas azan (Syuruk tiada iqamah)
   iqamah: { Subuh: 20, Zohor: 15, Asar: 15, Maghrib: 7, Isyak: 15 },
@@ -600,76 +595,64 @@ function updateClock() {
 const pad = n => String(n).padStart(2,'0');
 
 // ═══════════════════════════════════════════════════════════
-//  FETCH PRAYER TIMES
+//  FETCH PRAYER TIMES — api.waktusolat.app
 // ═══════════════════════════════════════════════════════════
+
+// Tukar Unix timestamp → "HH:MM" (Malaysia UTC+8)
+function tsToTime(ts) {
+  return new Date(ts * 1000).toLocaleTimeString('en-MY', {
+    timeZone: 'Asia/Kuala_Lumpur',
+    hour: '2-digit', minute: '2-digit', hour12: false
+  });
+}
+
 async function fetchPrayerTimes() {
   try {
-    // ── Try JAKIM e-solat ──
-    const ctrl = new AbortController();
-    const tout = setTimeout(() => ctrl.abort(), 6000);
-    try {
-      const r = await fetch(
-        `https://www.e-solat.gov.my/index.php?r=esolatApi/takwimsolat&period=today&zone=${CONFIG.zone}`,
-        { signal: ctrl.signal }
-      );
-      clearTimeout(tout);
-      const d = await r.json();
-      if (d.status === 'OK!' && d.prayerTime?.length > 0) {
-        applyEsolat(d);
-        return;
-      }
-    } catch(e) { clearTimeout(tout); }
-
-    // ── Fallback: Aladhan ──
-    const r2 = await fetch(
-      `https://api.aladhan.com/v1/timingsByCity?city=${encodeURIComponent(CONFIG.aladhanCity)}&country=${encodeURIComponent(CONFIG.aladhanCountry)}&method=${CONFIG.aladhanMethod}`
-    );
-    const d2 = await r2.json();
-    if (d2.code === 200) applyAladhan(d2);
-
+    const r = await fetch(`https://api.waktusolat.app/v2/solat/${CONFIG.zone}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    applyWaktuSolat(d);
   } catch(err) {
     console.error('Gagal mendapatkan waktu solat:', err);
     document.getElementById('currentPrayerText').textContent = '⚠ Tiada sambungan internet';
   }
 }
 
-function applyEsolat(d) {
-  const t = d.prayerTime[0];
-  prayerTimes = {
-    Subuh:   t.fajr,
-    Syuruk:  t.syuruk,
-    Zohor:   t.dhuhr,
-    Asar:    t.asr,
-    Maghrib: t.maghrib,
-    Isyak:   t.isha
-  };
-  // hijri: "24-Syawal-1447"
-  const parts = (t.hijri || '').split('-');
-  if (parts.length >= 3) hijriInfo = { day: parts[0], month: parts[1], year: parts[2] };
-  lastDate = new Date().toDateString();
-  renderCards();
-  console.log('✅ Waktu solat dari JAKIM e-solat (SGR03)');
-}
+function applyWaktuSolat(d) {
+  // Cari hari ini dalam array prayers[]
+  const today = new Date().toLocaleDateString('en-MY', {
+    timeZone: 'Asia/Kuala_Lumpur', day: 'numeric'
+  });
+  const dayNum = parseInt(today, 10);
 
-function applyAladhan(d) {
-  const t = d.data.timings;
+  const entry = d.prayers.find(p => p.day === dayNum);
+  if (!entry) {
+    console.error('Tiada data untuk hari ini (hari ke-' + dayNum + ')');
+    document.getElementById('currentPrayerText').textContent = '⚠ Data hari ini tiada';
+    return;
+  }
+
   prayerTimes = {
-    Subuh:   t.Fajr,
-    Syuruk:  t.Sunrise,
-    Zohor:   t.Dhuhr,
-    Asar:    t.Asr,
-    Maghrib: t.Maghrib,
-    Isyak:   t.Isha
+    Subuh:   tsToTime(entry.fajr),
+    Syuruk:  tsToTime(entry.syuruk),
+    Zohor:   tsToTime(entry.dhuhr),
+    Asar:    tsToTime(entry.asr),
+    Maghrib: tsToTime(entry.maghrib),
+    Isyak:   tsToTime(entry.isha)
   };
-  const h = d.data.date.hijri;
+
+  // Hijri: "1447-10-23" → { day:"23", month:"Syawal", year:"1447" }
+  const [hYear, hMonth, hDay] = (entry.hijri || '').split('-');
   hijriInfo = {
-    day:   h.day,
-    month: HIJRI_MONTHS[(h.month.number || 1) - 1] || h.month.en,
-    year:  h.year
+    day:   hDay   || '?',
+    month: HIJRI_MONTHS[(parseInt(hMonth,10) || 1) - 1] || '?',
+    year:  hYear  || '?'
   };
+
   lastDate = new Date().toDateString();
   renderCards();
-  console.log('✅ Waktu solat dari Aladhan API');
+  console.log(`✅ Waktu solat dari api.waktusolat.app (${CONFIG.zone}) — Hari ke-${dayNum}`);
+  console.table(prayerTimes);
 }
 
 // ═══════════════════════════════════════════════════════════
